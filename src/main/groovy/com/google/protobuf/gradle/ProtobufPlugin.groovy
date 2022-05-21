@@ -45,7 +45,9 @@ import org.gradle.api.file.FileCollection
 import org.gradle.api.file.SourceDirectorySet
 import org.gradle.api.internal.file.FileResolver
 import org.gradle.api.plugins.AppliedPlugin
+import org.gradle.api.plugins.ExtensionAware
 import org.gradle.api.tasks.SourceSet
+import org.gradle.jvm.tasks.Jar
 
 import javax.inject.Inject
 
@@ -63,6 +65,7 @@ class ProtobufPlugin implements Plugin<Project> {
             'com.android.library',
             'android',
             'android-library',
+            'org.jetbrains.kotlin.multiplatform'
     ]
 
     private static final List<String> SUPPORTED_LANGUAGES = [
@@ -489,6 +492,33 @@ class ProtobufPlugin implements Plugin<Project> {
           }
         }
       } else {
+        if (project.plugins.hasPlugin('org.jetbrains.kotlin.multiplatform')) {
+          ExtensionAware kotlinExtension = (ExtensionAware) project.extensions.getByName("kotlin")
+          NamedDomainObjectContainer<?> sourceSets = (NamedDomainObjectContainer) kotlinExtension.extensions.getByName("sourceSets")
+          project.protobuf.generateProtoTasks.ofSourceSet('main').each { GenerateProtoTask genProtoTask ->
+            sourceSets.named("commonMain").configure { kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet()) }
+            sourceSets.find { it.name.endsWith('Main') && it.name != 'commonMain' }.each { sourceSet ->
+              project.tasks.withType((Class<Task>) Class.forName("org.jetbrains.kotlin.gradle.tasks.KotlinCompile")) {
+                if (!name.contains('Test')) {
+                  dependsOn genProtoTask
+                }
+              }
+            }
+          }
+          project.tasks.withType(Jar) {
+            from(project.fileTree(new File(project.buildDir, "extracted-protos/main")))
+          }
+          project.protobuf.generateProtoTasks.ofSourceSet('test').each { GenerateProtoTask genProtoTask ->
+            sourceSets.named("commonTest").configure { kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet()) }
+            sourceSets.find { it.name.endsWith('Test') && it.name != 'commonTest' }.each { sourceSet ->
+              project.tasks.withType(((Class<Task>) Class.forName("org.jetbrains.kotlin.gradle.tasks.KotlinCompile"))) {
+                if (name.contains('Test')) {
+                  dependsOn genProtoTask
+                }
+              }
+            }
+          }
+        }
         project.sourceSets.each { SourceSet sourceSet ->
           project.protobuf.generateProtoTasks.ofSourceSet(sourceSet.name).each { GenerateProtoTask genProtoTask ->
             SUPPORTED_LANGUAGES.each { String lang ->
