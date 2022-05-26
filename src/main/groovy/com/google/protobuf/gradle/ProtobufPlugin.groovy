@@ -497,17 +497,9 @@ class ProtobufPlugin implements Plugin<Project> {
           NamedDomainObjectContainer<?> sourceSets = (NamedDomainObjectContainer) kotlinExtension.extensions.getByName("sourceSets")
           project.protobuf.generateProtoTasks.ofSourceSet('main').each { GenerateProtoTask genProtoTask ->
             sourceSets.named("commonMain").configure { kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet()) }
-            System.out.println("SOURCE SETS: " + sourceSets.collect { it.name })
-            def task = project.tasks.findByName("compileKotlinJsIr")
-            if (task != null) {
-              System.out.println("JS IR TASK: " + task.class)
-            } else {
-              System.out.println("TASK WAS NULL")
-            }
             sourceSets.find { it.name.endsWith('Main') && it.name != 'commonMain' }.each { sourceSet ->
               project.tasks.withType((Class<Task>) Class.forName("org.jetbrains.kotlin.gradle.tasks.AbstractKotlinCompile")) {
                 if (!name.contains('Test')) {
-                  System.out.println("MAKING TASK DEPENDENCY: " + name + " " + genProtoTask)
                   dependsOn genProtoTask
                 }
               }
@@ -521,7 +513,6 @@ class ProtobufPlugin implements Plugin<Project> {
             sourceSets.find { it.name.endsWith('Test') && it.name != 'commonTest' }.each { sourceSet ->
               project.tasks.withType(((Class<Task>) Class.forName("org.jetbrains.kotlin.gradle.tasks.AbstractKotlinCompile"))) {
                 if (name.contains('Test')) {
-                  System.out.println("MAKING TASK DEPENDENCY: " + name + " " + genProtoTask)
                   dependsOn genProtoTask
                 }
               }
