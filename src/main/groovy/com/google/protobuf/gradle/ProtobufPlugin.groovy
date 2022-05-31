@@ -497,7 +497,10 @@ class ProtobufPlugin implements Plugin<Project> {
           ExtensionAware kotlinExtension = (ExtensionAware) project.extensions.getByName("kotlin")
           NamedDomainObjectContainer<?> sourceSets = (NamedDomainObjectContainer) kotlinExtension.extensions.getByName("sourceSets")
           project.protobuf.generateProtoTasks.ofSourceSet('main').each { GenerateProtoTask genProtoTask ->
-            sourceSets.named("commonMain").configure { kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet()) }
+            sourceSets.named("commonMain").configure {
+              kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet())
+              resources.source(project.sourceSets.getByName('main').getExtensions().getByName('proto').include { '**/*.proto' })
+            }
             project.tasks.withType((Class<Task>) Class.forName("org.jetbrains.kotlin.gradle.tasks.AbstractKotlinCompile")) {
               if (!name.contains('Test')) {
                 dependsOn genProtoTask
@@ -520,7 +523,10 @@ class ProtobufPlugin implements Plugin<Project> {
           ExtensionAware kotlinExtension = (ExtensionAware) project.extensions.getByName("kotlin")
           NamedDomainObjectContainer<?> sourceSets = (NamedDomainObjectContainer) kotlinExtension.extensions.getByName("sourceSets")
           project.protobuf.generateProtoTasks.ofSourceSet('main').each { GenerateProtoTask genProtoTask ->
-            sourceSets.named("main").configure { kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet()) }
+            sourceSets.named("main").configure {
+              kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet())
+              resources.source(project.sourceSets.getByName('main').getExtensions().getByName('proto').include { '**/*.proto' })
+            }
             project.tasks.withType((Class<Task>) Class.forName("org.jetbrains.kotlin.gradle.tasks.AbstractKotlinCompile")) {
               if (!name.contains('Test')) {
                 dependsOn genProtoTask
