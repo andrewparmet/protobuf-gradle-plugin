@@ -494,62 +494,47 @@ class ProtobufPlugin implements Plugin<Project> {
         }
       } else {
         if (project.plugins.hasPlugin('org.jetbrains.kotlin.multiplatform')) {
-          ExtensionAware kotlinExtension = (ExtensionAware) project.extensions.getByName("kotlin")
-          NamedDomainObjectContainer<?> sourceSets = (NamedDomainObjectContainer) kotlinExtension.extensions.getByName("sourceSets")
-          project.protobuf.generateProtoTasks.ofSourceSet('main').each { GenerateProtoTask genProtoTask ->
-            sourceSets.named("commonMain").configure {
-              kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet())
-              resources.source(project.sourceSets.getByName('main').getExtensions().getByName('proto').include { '**/*.proto' })
-            }
-            project.tasks.withType((Class<Task>) Class.forName("org.jetbrains.kotlin.gradle.tasks.AbstractKotlinCompile")) {
-              if (!name.contains('Test')) {
-                dependsOn genProtoTask
-              }
-            }
-          }
-          project.tasks.withType(Jar) {
-            from(project.fileTree(new File(project.buildDir, "extracted-protos/main")))
-          }
-          project.protobuf.generateProtoTasks.ofSourceSet('test').each { GenerateProtoTask genProtoTask ->
-            sourceSets.named("commonTest").configure { kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet()) }
-            project.tasks.withType(((Class<Task>) Class.forName("org.jetbrains.kotlin.gradle.tasks.AbstractKotlinCompile"))) {
-              if (name.contains('Test')) {
-                dependsOn genProtoTask
-              }
-            }
-          }
+          linkGenerateProtoToSourceCompileForKotlinJsOrMpp('common')
         }
         if (project.plugins.hasPlugin('org.jetbrains.kotlin.js')) {
-          ExtensionAware kotlinExtension = (ExtensionAware) project.extensions.getByName("kotlin")
-          NamedDomainObjectContainer<?> sourceSets = (NamedDomainObjectContainer) kotlinExtension.extensions.getByName("sourceSets")
-          project.protobuf.generateProtoTasks.ofSourceSet('main').each { GenerateProtoTask genProtoTask ->
-            sourceSets.named("main").configure {
-              kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet())
-              resources.source(project.sourceSets.getByName('main').getExtensions().getByName('proto').include { '**/*.proto' })
-            }
-            project.tasks.withType((Class<Task>) Class.forName("org.jetbrains.kotlin.gradle.tasks.AbstractKotlinCompile")) {
-              if (!name.contains('Test')) {
-                dependsOn genProtoTask
-              }
-            }
-          }
-          project.tasks.withType(Jar) {
-            from(project.fileTree(new File(project.buildDir, "extracted-protos/main")))
-          }
-          project.protobuf.generateProtoTasks.ofSourceSet('test').each { GenerateProtoTask genProtoTask ->
-            sourceSets.named("test").configure { kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet()) }
-            project.tasks.withType(((Class<Task>) Class.forName("org.jetbrains.kotlin.gradle.tasks.AbstractKotlinCompile"))) {
-              if (name.contains('Test')) {
-                dependsOn genProtoTask
-              }
-            }
-          }
+          linkGenerateProtoToSourceCompileForKotlinJsOrMpp()
         }
         project.sourceSets.each { SourceSet sourceSet ->
           project.protobuf.generateProtoTasks.ofSourceSet(sourceSet.name).each { GenerateProtoTask genProtoTask ->
             SUPPORTED_LANGUAGES.each { String lang ->
               linkGenerateProtoTasksToTaskName(sourceSet.getCompileTaskName(lang), genProtoTask)
             }
+          }
+        }
+      }
+    }
+
+    private void linkGenerateProtoToSourceCompileForKotlinJsOrMpp(String sourceSetPrefix = '') {
+      String mainSourceSetName = sourceSetPrefix.isEmpty() ? 'main' : sourceSetPrefix + 'Main'
+      String testSourceSetName = sourceSetPrefix.isEmpty() ? 'test' : sourceSetPrefix + 'Test'
+
+      linkGenerateProtoTasksAndIncludeGeneratedSource(mainSourceSetName, false)
+      linkGenerateProtoTasksAndIncludeGeneratedSource(testSourceSetName, true)
+
+      project.tasks.withType(Jar) {
+        from(project.fileTree(getExtractedProtosDir('main')))
+      }
+    }
+
+    private void linkGenerateProtoTasksAndIncludeGeneratedSource(String sourceSetName, boolean test) {
+      String protoSourceSetRoot = test ? 'test' : 'main'
+
+      ExtensionAware kotlinExtension = (ExtensionAware) project.extensions.getByName('kotlin')
+      NamedDomainObjectContainer<?> sourceSets = (NamedDomainObjectContainer<?>) kotlinExtension.extensions.getByName('sourceSets')
+
+      project.protobuf.generateProtoTasks.ofSourceSet(protoSourceSetRoot).each { GenerateProtoTask genProtoTask ->
+        sourceSets.named(sourceSetName).configure {
+          kotlin.srcDir(genProtoTask.getOutputSourceDirectorySet())
+          resources.source(project.sourceSets.getByName(protoSourceSetRoot).getExtensions().getByName('proto').include { '**/*.proto' })
+        }
+        project.tasks.withType((Class<Task>) Class.forName('org.jetbrains.kotlin.gradle.tasks.AbstractKotlinCompile')) {
+          if ((test && name.contains('Test')) || (!test && !name.contains('Test'))) {
+            dependsOn genProtoTask
           }
         }
       }
