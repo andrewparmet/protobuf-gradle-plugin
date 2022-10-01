@@ -29,17 +29,16 @@
  */
 package com.google.protobuf.gradle
 
-import com.google.common.base.Preconditions
-import groovy.transform.CompileDynamic
+import groovy.transform.CompileStatic
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.file.FileCollection
-import org.gradle.api.file.FileSystemLocation
 import org.gradle.api.file.FileTree
 import org.gradle.api.logging.Logger
 import org.gradle.api.model.ObjectFactory
-import org.gradle.api.tasks.Input
+import org.gradle.api.provider.ProviderFactory
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
@@ -48,39 +47,28 @@ import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.util.PatternFilterable
 import org.gradle.api.tasks.util.PatternSet
+import org.gradle.util.GradleVersion
 
 import javax.inject.Inject
 
 /**
  * Extracts proto files from a dependency configuration.
  */
-@CompileDynamic
+@CompileStatic
 abstract class ProtobufExtract extends DefaultTask {
 
-  /**
-   * The directory for the extracted files.
-   */
-  private File destDir
-  private Boolean isTest = null
-  private final ConfigurableFileCollection inputFiles = objectFactory.fileCollection()
   private final CopyActionFacade copyActionFacade = instantiateCopyActionFacade()
   private final ArchiveActionFacade archiveActionFacade = instantiateArchiveActionFacade()
   private final FileCollection filteredProtos = instantiateFilteredProtos()
 
-  public void setIsTest(boolean isTest) {
-    this.isTest = isTest
-  }
+  @OutputDirectory
+  public abstract DirectoryProperty getDestDir()
 
-  @Input
-  public boolean getIsTest() {
-    Preconditions.checkNotNull(isTest)
-    return isTest
-  }
-
+  /**
+   * Input for this tasks containing all archive files to extract.
+   */
   @Internal
-  public ConfigurableFileCollection getInputFiles() {
-    return inputFiles
-  }
+  public abstract ConfigurableFileCollection getInputFiles()
 
   /**
    * Inputs for this task containing only proto files, which is enough for up-to-date checks.
@@ -88,50 +76,30 @@ abstract class ProtobufExtract extends DefaultTask {
    */
   @InputFiles
   @PathSensitive(PathSensitivity.RELATIVE)
-  FileTree getFilteredProtosFromInputs() {
-    return filteredProtos.asFileTree.matching { PatternFilterable pattern -> pattern.include("**/*.proto") }
+  public FileTree getInputProtoFiles() {
+    return filteredProtos.asFileTree
+      .matching { PatternFilterable pattern -> pattern.include("**/*.proto") }
   }
-
-  @Internal
-  CopyActionFacade getCopyActionFacade() {
-    return copyActionFacade
-  }
-
-  @Internal
-  ArchiveActionFacade getArchiveActionFacade() {
-    return archiveActionFacade
-  }
-
-  @Inject
-  abstract ObjectFactory getObjectFactory()
 
   @TaskAction
-  void extract() {
-    destDir.mkdir()
-    FileCollection allProtoFiles = filteredProtos
+  public void extract() {
     copyActionFacade.copy { spec ->
       spec.includeEmptyDirs = false
-      spec.from(allProtoFiles)
-      spec.include('**/*.proto')
+      spec.from(inputProtoFiles)
       spec.into(destDir)
       // gradle 7+ requires a duplicate strategy to be explicitly defined
       spec.duplicatesStrategy = DuplicatesStrategy.INCLUDE
     }
   }
 
-  protected void setDestDir(File destDir) {
-    Preconditions.checkState(this.destDir == null, 'destDir already set')
-    this.destDir = destDir
-    outputs.dir destDir
-  }
+  @Inject
+  protected abstract ObjectFactory getObjectFactory()
 
-  @OutputDirectory
-  protected File getDestDir() {
-    return destDir
-  }
+  @Inject
+  protected abstract ProviderFactory getProviderFactory()
 
   private CopyActionFacade instantiateCopyActionFacade() {
-    if (Utils.compareGradleVersion(project, "6.0") > 0) {
+    if (GradleVersion.current() >= GradleVersion.version("6.0")) {
       // Use object factory to instantiate as that will inject the necessary service.
       return objectFactory.newInstance(CopyActionFacade.FileSystemOperationsBased)
     }
@@ -139,7 +107,7 @@ abstract class ProtobufExtract extends DefaultTask {
   }
 
   private ArchiveActionFacade instantiateArchiveActionFacade() {
-    if (Utils.compareGradleVersion(project, "6.0") > 0) {
+    if (GradleVersion.current() >= GradleVersion.version("6.0")) {
       // Use object factory to instantiate as that will inject the necessary service.
       return objectFactory.newInstance(ArchiveActionFacade.ServiceBased)
     }
@@ -150,11 +118,16 @@ abstract class ProtobufExtract extends DefaultTask {
     boolean warningLogged = false
     ArchiveActionFacade archiveFacade = this.archiveActionFacade
     Logger logger = this.logger
-    return objectFactory.fileCollection().from(inputFiles.getElements().map { files ->
+    // Provider.map seems broken for excluded tasks. Add inputFiles with all contents excluded for
+    // the dependency it provides, but then provide the files we actually care about in our own
+    // provider. https://github.com/google/protobuf-gradle-plugin/issues/550
+    return objectFactory.fileCollection()
+        .from(inputFiles.filter { false })
+        .from(providerFactory.provider { unused ->
+      Set<File> files = inputFiles.files
       PatternSet protoFilter = new PatternSet().include("**/*.proto")
       Set<Object> protoInputs = [] as Set
-      for (FileSystemLocation location : files) {
-        File file = location.asFile
+      for (File file : files) {
         if (file.isDirectory()) {
           protoInputs.add(file)
         } else if (file.path.endsWith('.proto')) {
@@ -171,7 +144,7 @@ abstract class ProtobufExtract extends DefaultTask {
         } else if (file.path.endsWith('.jar') || file.path.endsWith('.zip')) {
           protoInputs.add(archiveFacade.zipTree(file.path).matching(protoFilter))
         } else if (file.path.endsWith('.aar')) {
-          FileCollection zipTree = archiveFacade.zipTree(file.path).filter { it.path.endsWith('.jar') }
+          FileCollection zipTree = archiveFacade.zipTree(file.path).filter { File it -> it.path.endsWith('.jar') }
           zipTree.each { entry ->
             protoInputs.add(archiveFacade.zipTree(entry).matching(protoFilter))
           }

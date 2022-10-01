@@ -29,30 +29,24 @@
 package com.google.protobuf.gradle
 
 import com.google.common.base.Preconditions
-import groovy.transform.CompileDynamic
-import org.apache.commons.lang.StringUtils
-import org.gradle.api.GradleException
+import groovy.transform.CompileStatic
 import org.gradle.api.Project
 import org.gradle.api.tasks.SourceSet
 import org.gradle.plugins.ide.idea.GenerateIdeaModule
 import org.gradle.plugins.ide.idea.model.IdeaModel
-import org.gradle.util.GUtil
-
-import java.util.regex.Matcher
 
 /**
  * Utility classes.
  */
-@CompileDynamic
+@CompileStatic
 class Utils {
   /**
    * Returns the conventional name of a configuration for a sourceSet
    */
   static String getConfigName(String sourceSetName, String type) {
     // same as DefaultSourceSet.configurationNameOf
-    String baseName = sourceSetName == SourceSet.MAIN_SOURCE_SET_NAME ?
-            '' : GUtil.toCamelCase(sourceSetName)
-    return StringUtils.uncapitalize(baseName + StringUtils.capitalize(type))
+    return sourceSetName == SourceSet.MAIN_SOURCE_SET_NAME
+        ? type : sourceSetName + type.capitalize()
   }
 
   /**
@@ -61,7 +55,7 @@ class Utils {
    */
   static String getSourceSetSubstringForTaskNames(String sourceSetName) {
     return sourceSetName == SourceSet.MAIN_SOURCE_SET_NAME ?
-        '' : GUtil.toCamelCase(sourceSetName)
+        '' : sourceSetName.capitalize()
   }
 
   private static final String ANDROID_BASE_PLUGIN_ID = "com.android.base"
@@ -95,21 +89,7 @@ class Utils {
     // Fortunately, the naming scheme is well defined:
     // https://kotlinlang.org/docs/reference/using-gradle.html#compiler-options
     Preconditions.checkState(isAndroidProject(project))
-    return "compile" + GUtil.toCamelCase(variantName) + "Kotlin"
-  }
-
-  /**
-   * Returns positive/0/negative if current Gradle version is higher than/equal to/lower than the
-   * given target version.  Only major and minor versions are checked.  Patch version is ignored.
-   */
-  static int compareGradleVersion(Project project, String target) {
-    Matcher gv = parseVersionString(project.gradle.gradleVersion)
-    Matcher tv = parseVersionString(target)
-    int majorVersionDiff = gv.group(1).toInteger() - tv.group(1).toInteger()
-    if (majorVersionDiff != 0) {
-      return majorVersionDiff
-    }
-    return gv.group(2).toInteger() - tv.group(2).toInteger()
+    return "compile" + variantName.capitalize() + "Kotlin"
   }
 
   /**
@@ -145,13 +125,5 @@ class Utils {
         }
       }
     }
-  }
-
-  private static Matcher parseVersionString(String version) {
-    Matcher matcher = version =~ "(\\d*)\\.(\\d*).*"
-    if (!matcher || !matcher.matches()) {
-      throw new GradleException("Failed to parse version \"${version}\"")
-    }
-    return matcher
   }
 }

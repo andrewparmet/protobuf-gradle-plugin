@@ -33,7 +33,11 @@ import static java.nio.charset.StandardCharsets.US_ASCII
 
 import com.google.common.base.Preconditions
 import com.google.common.collect.ImmutableList
-import groovy.transform.CompileDynamic
+import groovy.transform.CompileStatic
+import groovy.transform.PackageScope
+import groovy.transform.TypeChecked
+import groovy.transform.TypeCheckingMode
+import org.gradle.api.Action
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.Named
@@ -42,11 +46,8 @@ import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.FileCollection
 import org.gradle.api.file.ProjectLayout
 import org.gradle.api.file.SourceDirectorySet
-import org.gradle.api.internal.file.FileResolver
 import org.gradle.api.logging.LogLevel
 import org.gradle.api.model.ObjectFactory
-import org.gradle.api.provider.MapProperty
-import org.gradle.api.provider.Property
 import org.gradle.api.provider.Provider
 import org.gradle.api.provider.ProviderFactory
 import org.gradle.api.tasks.CacheableTask
@@ -63,7 +64,6 @@ import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.SkipWhenEmpty
 import org.gradle.api.tasks.SourceSet
 import org.gradle.api.tasks.TaskAction
-import org.gradle.util.ConfigureUtil
 
 import javax.annotation.Nullable
 import javax.inject.Inject
@@ -72,7 +72,7 @@ import javax.inject.Inject
  * The task that compiles proto files into Java files.
  */
 // TODO(zhangkun83): add per-plugin output dir reconfiguraiton.
-@CompileDynamic
+@CompileStatic
 @CacheableTask
 public abstract class GenerateProtoTask extends DefaultTask {
   // Windows CreateProcess has command line limit of 32768:
@@ -87,16 +87,17 @@ public abstract class GenerateProtoTask extends DefaultTask {
   // that may be "imported" from the source protos, but will not be compiled.
   private final ConfigurableFileCollection includeDirs = objectFactory.fileCollection()
   // source files are proto files that will be compiled by protoc
-  private final ConfigurableFileCollection sourceFiles = objectFactory.fileCollection()
+  private final ConfigurableFileCollection sourceDirs = objectFactory.fileCollection()
   private final NamedDomainObjectContainer<PluginOptions> builtins = objectFactory.domainObjectContainer(PluginOptions)
   private final NamedDomainObjectContainer<PluginOptions> plugins = objectFactory.domainObjectContainer(PluginOptions)
   private final ProjectLayout projectLayout = project.layout
+  private final ToolsLocator toolsLocator = project.extensions.findByType(ProtobufExtension).tools
 
   // These fields are set by the Protobuf plugin only when initializing the
   // task.  Ideally they should be final fields, but Gradle task cannot have
   // constructor arguments. We use the initializing flag to prevent users from
   // accidentally modifying them.
-  private String outputBaseDir
+  private Provider<String> outputBaseDir
   // Tags for selectors inside protobuf.generateProtoTasks; do not serialize with Gradle configuration caching
   @SuppressWarnings("UnnecessaryTransientModifier") // It is not necessary for task to implement Serializable
   transient private SourceSet sourceSet
@@ -105,7 +106,6 @@ public abstract class GenerateProtoTask extends DefaultTask {
   private ImmutableList<String> flavors
   private String buildType
   private boolean isTestVariant
-  private FileResolver fileResolver
   private final Provider<Boolean> isAndroidProject = providerFactory.provider { Utils.isAndroidProject(project) }
   private final Provider<Boolean> isTestProvider = providerFactory.provider {
     if (Utils.isAndroidProject(project)) {
@@ -180,7 +180,7 @@ public abstract class GenerateProtoTask extends DefaultTask {
   static List<List<String>> generateCmds(List<String> baseCmd, List<File> protoFiles, int cmdLengthLimit) {
     List<List<String>> cmds = []
     if (!protoFiles.isEmpty()) {
-      int baseCmdLength = baseCmd.sum { it.length() + CMD_ARGUMENT_EXTRA_LENGTH }
+      int baseCmdLength = baseCmd.sum { it.length() + CMD_ARGUMENT_EXTRA_LENGTH } as int
       List<String> currentArgs = []
       int currentArgsLength = 0
       for (File proto: protoFiles) {
@@ -249,7 +249,7 @@ public abstract class GenerateProtoTask extends DefaultTask {
     return java.path
   }
 
-  void setOutputBaseDir(String outputBaseDir) {
+  void setOutputBaseDir(Provider<String> outputBaseDir) {
     checkInitializing()
     Preconditions.checkState(this.outputBaseDir == null, 'outputBaseDir is already set')
     this.outputBaseDir = outputBaseDir
@@ -257,7 +257,7 @@ public abstract class GenerateProtoTask extends DefaultTask {
 
   @OutputDirectory
   String getOutputBaseDir() {
-    return outputBaseDir
+    return outputBaseDir.get()
   }
 
   void setSourceSet(SourceSet sourceSet) {
@@ -289,12 +289,7 @@ public abstract class GenerateProtoTask extends DefaultTask {
     this.buildType = buildType
   }
 
-  void setFileResolver(FileResolver fileResolver) {
-    checkInitializing()
-    this.fileResolver = fileResolver
-  }
-
-  @Internal("Inputs tracked in getSourceFiles()")
+  @Internal("Inputs tracked in getSourceDirs()")
   SourceSet getSourceSet() {
     Preconditions.checkState(!isAndroidProject.get(),
         'sourceSet should not be used in an Android project')
@@ -306,8 +301,8 @@ public abstract class GenerateProtoTask extends DefaultTask {
   @PathSensitive(PathSensitivity.RELATIVE)
   @IgnoreEmptyDirectories
   @InputFiles
-  FileCollection getSourceFiles() {
-    return sourceFiles
+  FileCollection getSourceDirs() {
+    return sourceDirs
   }
 
   @InputFiles
@@ -324,21 +319,9 @@ public abstract class GenerateProtoTask extends DefaultTask {
     return variant
   }
 
-  @Internal("Input captured by getExecutables()")
-  abstract Property<ExecutableLocator> getProtocLocator()
-
-  @Internal("Input captured by getSnapshotArtifacts(), this is used to query alternative path by locator name.")
-  abstract MapProperty<String, FileCollection> getLocatorToAlternativePathsMapping()
-
-  @Internal("Input captured by getReleaseDependenciesMapping()")
-  abstract MapProperty<String, String> getLocatorToDependencyMapping()
-
-  @Internal("This property is no longer an input, but kept and marked @Internal for backwards compatibility.")
-  ConfigurableFileCollection getAlternativePaths() {
-    return objectFactory.fileCollection().from(getLocatorToAlternativePathsMapping().get().values())
-  }
-
   /**
+   * Not for external use. Used to expose inputs to Gradle.
+   *
    * For each protoc and code gen plugin defined by an artifact specification, this list will contain a String with the
    * group, artifact, and version, as long as the version is a stable release version.
    *
@@ -348,51 +331,30 @@ public abstract class GenerateProtoTask extends DefaultTask {
    */
   @Input
   Provider<List<String>> getReleaseArtifacts() {
-    releaseDependenciesMapping.map { it.values().collect() }
-  }
-
-  /**
-   * This file collection contains the file for each protoc and code gen plugin that is defined by an artifact
-   * specification that specifies a SNAPSHOT version.
-   *
-   * Since snapshots are expected to differ within the same version, this input allows Gradle to consider the file
-   * itself rather than the version number.
-   */
-  @InputFiles
-  @PathSensitive(PathSensitivity.NONE)
-  FileCollection getSnapshotArtifacts() {
-    Provider<Collection<FileCollection>> snapshotArtifacts = locatorToAlternativePathsMapping.map { map ->
-      Set<String> releaseArtifactKeys = releaseDependenciesMapping.get().keySet()
-      map.findAll { entry ->
-        !releaseArtifactKeys.contains(entry.key)
-      }.values()
-    }
-
-    objectFactory.fileCollection().from(snapshotArtifacts)
-  }
-
-  @Internal
-  Provider<Map<String, String>> getReleaseDependenciesMapping() {
     providerFactory.provider {
-      locatorToDependencyMapping.get()
-          .findAll { entry -> ! entry.value.endsWith ("-SNAPSHOT") }
+      releaseExecutableLocators.collect { it.simplifiedArtifactName }
     }
   }
 
+  /** Not for external use. Used to expose inputs to Gradle. */
   @InputFiles
   @PathSensitive(PathSensitivity.NONE)
   FileCollection getExecutables() {
-    objectFactory.fileCollection().from {
-      protocLocator.getOrNull()?.path
-    }.from {
-      pluginsExecutableLocators.get().values()
-        .collect { it.path }
-        .findAll { it }
+    Provider<List> executables = providerFactory.provider {
+      List<ExecutableLocator> release = releaseExecutableLocators
+      allExecutableLocators.findAll { !release.contains(it) }
+        .collect { it.path != null ? it.path : it.artifactFiles }
     }
+    objectFactory.fileCollection().from(executables)
   }
 
-  @Internal("Input captured by getExecutables()")
-  abstract MapProperty<String, ExecutableLocator> getPluginsExecutableLocators()
+  private List<ExecutableLocator> getReleaseExecutableLocators() {
+    allExecutableLocators.findAll { it.path == null && !it.simplifiedArtifactName.endsWith ("-SNAPSHOT") }
+  }
+
+  private List<ExecutableLocator> getAllExecutableLocators() {
+    [toolsLocator.protoc] + plugins.collect { PluginOptions it -> toolsLocator.plugins.getByName(it.name) }
+  }
 
   @Internal("Not an actual input to the task, only used to find tasks belonging to a variant")
   Provider<Boolean> getIsAndroidProject() {
@@ -415,6 +377,7 @@ public abstract class GenerateProtoTask extends DefaultTask {
     return flavors
   }
 
+  @TypeChecked(TypeCheckingMode.SKIP) // Don't depend on AGP
   @Internal("Not an actual input to the task, only used to find tasks belonging to a variant")
   String getBuildType() {
     Preconditions.checkState(isAndroidProject.get(),
@@ -441,7 +404,7 @@ public abstract class GenerateProtoTask extends DefaultTask {
       throw new IllegalStateException(
           "requested descriptor path but descriptor generation is off")
     }
-    return descriptorSetOptions.path != null ? descriptorSetOptions.path : "${outputBaseDir}/descriptor_set.desc"
+    return descriptorSetOptions.path != null ? descriptorSetOptions.path : "${outputBaseDir.get()}/descriptor_set.desc"
   }
 
   @Inject
@@ -458,9 +421,9 @@ public abstract class GenerateProtoTask extends DefaultTask {
    * Configures the protoc builtins in a closure, which will be manipulating a
    * NamedDomainObjectContainer<PluginOptions>.
    */
-  public void builtins(Closure configureClosure) {
+  public void builtins(Action<NamedDomainObjectContainer<PluginOptions>> configureAction) {
     checkCanConfig()
-    ConfigureUtil.configure(configureClosure, builtins)
+    configureAction.execute(this.builtins)
   }
 
   /**
@@ -476,9 +439,9 @@ public abstract class GenerateProtoTask extends DefaultTask {
    * Configures the protoc plugins in a closure, which will be maniuplating a
    * NamedDomainObjectContainer<PluginOptions>.
    */
-  public void plugins(Closure configureClosure) {
+  public void plugins(Action<NamedDomainObjectContainer<PluginOptions>> configureAction) {
     checkCanConfig()
-    ConfigureUtil.configure(configureClosure, plugins)
+    configureAction.execute(this.plugins)
   }
 
   /**
@@ -508,9 +471,9 @@ public abstract class GenerateProtoTask extends DefaultTask {
   /**
    * Add a collection of proto source files to be compiled.
    */
-  public void addSourceFiles(FileCollection files) {
+  public void addSourceDirs(FileCollection dirs) {
     checkCanConfig()
-    sourceFiles.from(files)
+    sourceDirs.from(dirs)
   }
 
   /**
@@ -584,7 +547,7 @@ public abstract class GenerateProtoTask extends DefaultTask {
   //===========================================================================
 
   String getOutputDir(PluginOptions plugin) {
-    return "${outputBaseDir}/${plugin.outputSubDir}"
+    return "${outputBaseDir.get()}/${plugin.outputSubDir}"
   }
 
   /**
@@ -596,19 +559,29 @@ public abstract class GenerateProtoTask extends DefaultTask {
     String srcSetName = "generate-proto-" + name
     SourceDirectorySet srcSet
     srcSet = objectFactory.sourceDirectorySet(srcSetName, srcSetName)
+    srcSet.srcDirs objectFactory.fileCollection().builtBy(this).from(providerFactory.provider {
+      getOutputSourceDirectories()
+    })
+    return srcSet
+  }
+
+  @Internal
+  @PackageScope
+  Collection<File> getOutputSourceDirectories() {
+    Collection<File> srcDirs = []
     builtins.each { builtin ->
       File dir = new File(getOutputDir(builtin))
       if (!dir.name.endsWith(".zip") && !dir.name.endsWith(".jar")) {
-        srcSet.srcDir dir
+        srcDirs.add(dir)
       }
     }
     plugins.each { plugin ->
       File dir = new File(getOutputDir(plugin))
       if (!dir.name.endsWith(".zip") && !dir.name.endsWith(".jar")) {
-        srcSet.srcDir dir
+        srcDirs.add(dir)
       }
     }
-    return srcSet
+    return srcDirs
   }
 
   @TaskAction
@@ -617,9 +590,9 @@ public abstract class GenerateProtoTask extends DefaultTask {
 
     // Sort to ensure generated descriptors have a canonical representation
     // to avoid triggering unnecessary rebuilds downstream
-    List<File> protoFiles = sourceFiles.files.sort()
+    List<File> protoFiles = sourceDirs.asFileTree.files.sort()
 
-    [builtins, plugins]*.each { plugin ->
+    [builtins, plugins]*.forEach { PluginOptions plugin ->
       String outputPath = getOutputDir(plugin)
       File outputDir = new File(outputPath)
       // protoc is capable of output generated files directly to a JAR file
@@ -632,32 +605,33 @@ public abstract class GenerateProtoTask extends DefaultTask {
 
     // The source directory designated from sourceSet may not actually exist on disk.
     // "include" it only when it exists, so that Gradle and protoc won't complain.
-    List<String> dirs = includeDirs.filter { it.exists() }*.path.collect { "-I${it}" }
+    List<String> dirs = (sourceDirs + includeDirs).filter { File it -> it.exists() }*.path
+        .collect { "-I${it}".toString() }
     logger.debug "ProtobufCompile using directories ${dirs}"
     logger.debug "ProtobufCompile using files ${protoFiles}"
 
-    String protocPath = computeExecutablePath(protocLocator.get())
+    String protocPath = computeExecutablePath(toolsLocator.protoc)
     List<String> baseCmd = [ protocPath ]
     baseCmd.addAll(dirs)
 
     // Handle code generation built-ins
     builtins.each { builtin ->
       String outPrefix = makeOptionsPrefix(builtin.options)
-      baseCmd += "--${builtin.name}_out=${outPrefix}${getOutputDir(builtin)}"
+      baseCmd += "--${builtin.name}_out=${outPrefix}${getOutputDir(builtin)}".toString()
     }
 
-    Map<String, ExecutableLocator> executableLocations = pluginsExecutableLocators.get()
+    Map<String, ExecutableLocator> executableLocations = toolsLocator.plugins.asMap
     // Handle code generation plugins
     plugins.each { plugin ->
       String name = plugin.name
       ExecutableLocator locator = executableLocations.get(name)
       if (locator != null) {
-        baseCmd += "--plugin=protoc-gen-${name}=${computeExecutablePath(locator)}"
+        baseCmd += "--plugin=protoc-gen-${name}=${computeExecutablePath(locator)}".toString()
       } else {
         logger.warn "protoc plugin '${name}' not defined. Trying to use 'protoc-gen-${name}' from system path"
       }
       String pluginOutPrefix = makeOptionsPrefix(plugin.options)
-      baseCmd += "--${name}_out=${pluginOutPrefix}${getOutputDir(plugin)}"
+      baseCmd += "--${name}_out=${pluginOutPrefix}${getOutputDir(plugin)}".toString()
     }
 
     if (generateDescriptorSet) {
@@ -668,7 +642,7 @@ public abstract class GenerateProtoTask extends DefaultTask {
       if (!folder.exists()) {
         folder.mkdirs()
       }
-      baseCmd += "--descriptor_set_out=${path}"
+      baseCmd += "--descriptor_set_out=${path}".toString()
       if (descriptorSetOptions.includeImports) {
         baseCmd += "--include_imports"
       }
@@ -742,7 +716,7 @@ public abstract class GenerateProtoTask extends DefaultTask {
     if (locator.path != null) {
       return locator.path.endsWith(JAR_SUFFIX) ? createJarTrampolineScript(locator.path) : locator.path
     }
-    File file = locatorToAlternativePathsMapping.getting(locator.name).get().singleFile
+    File file = locator.artifactFiles.singleFile
     if (file.name.endsWith(JAR_SUFFIX)) {
       return createJarTrampolineScript(file.getAbsolutePath())
     }

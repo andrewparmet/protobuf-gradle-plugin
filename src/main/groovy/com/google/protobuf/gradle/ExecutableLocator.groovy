@@ -28,8 +28,11 @@
  */
 package com.google.protobuf.gradle
 
-import groovy.transform.CompileDynamic
+import com.google.common.base.Preconditions
+import groovy.transform.CompileStatic
+import groovy.transform.PackageScope
 import org.gradle.api.Named
+import org.gradle.api.file.FileCollection
 
 /**
  * Locates an executable that can either be found locally or downloaded from
@@ -37,13 +40,16 @@ import org.gradle.api.Named
  * configured, the plugin should try to run the executable from system search
  * path.
  */
-@CompileDynamic
+@CompileStatic
 class ExecutableLocator implements Named {
 
   private final String name
 
   private String artifact
   private String path
+
+  private FileCollection artifactFiles
+  private String simplifiedArtifactName
 
   ExecutableLocator(String name) {
     this.name = name
@@ -77,5 +83,25 @@ class ExecutableLocator implements Named {
 
   String getPath() {
     return path
+  }
+
+  @PackageScope
+  FileCollection getArtifactFiles() {
+    Preconditions.checkState(path == null, 'Not artifact based')
+    Preconditions.checkState(artifactFiles != null, 'Not yet created resolved')
+    return artifactFiles
+  }
+
+  @PackageScope
+  String getSimplifiedArtifactName() {
+    Preconditions.checkState(path == null, 'Not artifact based')
+    Preconditions.checkState(simplifiedArtifactName != null, 'Not yet resolved')
+    return simplifiedArtifactName
+  }
+
+  @PackageScope
+  void resolve(FileCollection artifactFiles, String simplifiedArtifactName) {
+    this.artifactFiles = artifactFiles
+    this.simplifiedArtifactName = simplifiedArtifactName
   }
 }

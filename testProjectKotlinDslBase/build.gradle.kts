@@ -8,18 +8,13 @@ plugins {
     id("com.google.protobuf")
 }
 
-// This extension is not auto generated when we apply the plugin using
-// apply(plugin = "com.google.protobuf")
-val Project.protobuf: ProtobufConvention get() =
-    this.convention.getPlugin(ProtobufConvention::class)
-
 repositories {
     maven("https://plugins.gradle.org/m2/")
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_1_7
-    targetCompatibility = JavaVersion.VERSION_1_7
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
 }
 
 sourceSets {
@@ -41,12 +36,14 @@ dependencies {
     testProtobuf(files("lib/protos-test.tar.gz"))
 
     implementation(protobufDep)
+    implementation("javax.annotation:javax.annotation-api:1.3.2")
     testImplementation("junit:junit:4.12")
     // KotlinFooTest.kt requires reflection utilities
     testImplementation("org.jetbrains.kotlin:kotlin-reflect:1.2.0")
     grpcImplementation(protobufDep)
     grpcImplementation("io.grpc:grpc-stub:1.0.0-pre2")
     grpcImplementation("io.grpc:grpc-protobuf:1.0.0-pre2")
+    grpcImplementation("javax.annotation:javax.annotation-api:1.3.2")
 }
 
 protobuf {
@@ -79,12 +76,15 @@ tasks {
             val compileTaskName = sourceSet.getCompileTaskName("java")
             dependsOn(project.tasks.getByName(compileTaskName))
         }
+
+        // gradle 7+ requires a duplicate strategy to be explicitly defined
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE
     }
 
     "test"{
 
         doLast{
-            val generateProtoTasks = project.protobuf.protobuf.generateProtoTasks
+            val generateProtoTasks = project.protobuf.generateProtoTasks
 
             val generateProtoTaskNames = generateProtoTasks.all().map { it.name }.toSet()
             val generateProtoTaskNamesMain = generateProtoTasks.ofSourceSet("main").map { it.name }.toSet()
